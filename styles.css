@@ -63,6 +63,7 @@ input{font:inherit;color:inherit}
 .tab .badge{font-size:10px;padding:1px 5px;border-radius:99px;background:var(--warn);color:#fff;font-weight:600}
 
 /* ---------- 警示条 ---------- */
+.alert[hidden]{display:none}
 .alert{
   margin:10px 14px 0;padding:10px 12px;border-radius:12px;background:var(--warn-soft);
   border:1px solid rgba(245,158,11,.35);color:#8A5A06;font-size:12.5px;line-height:1.5;
@@ -276,3 +277,87 @@ svg.map{display:block;width:100%;height:auto;background:
 .hldot.hl-red{border-color:#EF4444;background:#EF4444}
 .hldot.hl-good{border-color:#10B981;background:#10B981}
 .hldot.off{border-style:dashed;opacity:.5}
+
+/* ============ 行程首页 ============ */
+.tb-left{display:flex;align-items:center;gap:8px;min-width:0}
+.room{min-width:0}
+.icon-btn.back{font-size:19px;line-height:1;padding-bottom:2px;font-weight:500}
+body.home .budget,body.home .tabs,body.home .mapwrap,body.home .foot{display:none}
+body.home .layout{padding-top:14px}
+
+.tripcard{
+  position:relative;background:#fff;border:1px solid var(--line);border-radius:16px;
+  padding:14px 14px 12px;margin-bottom:10px;box-shadow:var(--shadow);transition:.15s;
+}
+.tripcard:active{transform:scale(.995);border-color:#D5DAE1}
+.tc-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.tc-name{font-size:15.5px;font-weight:650;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tc-badge{flex:0 0 auto;font-size:10.5px;padding:3px 8px;border-radius:99px;background:#F3F5F7;color:#8B919B}
+.tc-badge.on{background:var(--final-soft);color:#047857}
+.tc-meta{font-size:11.5px;color:var(--sub);margin-top:4px}
+.tc-stat{display:flex;gap:14px;margin-top:10px;padding-top:9px;border-top:1px solid #F3F5F7}
+.tc-stat span{font-size:10.5px;color:var(--sub)}
+.tc-stat b{font-size:13px;color:var(--text);font-weight:650;margin-right:2px}
+.tc-stat b.warn{color:#B45309}
+.tc-del{
+  position:absolute;right:10px;bottom:10px;width:24px;height:24px;border-radius:7px;
+  background:#F5F6F8;color:#B4BAC2;font-size:14px;line-height:1;display:grid;place-items:center;
+}
+.tc-del:active{background:#FDE8E8;color:#DC2626}
+
+.newtrip{
+  width:100%;padding:14px;border-radius:16px;background:#fff;border:1.5px dashed #CDD3DB;
+  color:#5B616B;font-size:13.5px;font-weight:550;
+}
+.newtrip:active{background:#FAFBFC}
+.homefoot{margin-top:16px;text-align:center;font-size:10.5px;color:#A6ACB5;line-height:1.6}
+
+/* ============ 交通 / 地铁图 ============ */
+.mdefault{display:flex;align-items:center;gap:5px;padding:6px 12px 2px;flex-wrap:wrap}
+.mdefault .lbl{font-size:10px;color:#A6ACB5;margin-right:2px}
+.mdefault button{font-size:11px;padding:3px 9px;border-radius:7px;background:#F5F6F8;color:#6B7280}
+.mdefault button.on{background:#171B21;color:#fff;font-weight:600}
+
+.leg{width:100%;background:none;text-align:left;border-bottom:1px dashed #EEF0F3;padding:7px 0}
+.leg .tm{display:inline-flex;align-items:center;gap:4px}
+.leg .dc{width:6px;height:6px;border-radius:50%;display:inline-block}
+
+.metro{padding:14px 14px 8px}
+.mstop{display:flex;align-items:center;gap:9px}
+.mdot{width:11px;height:11px;border-radius:50%;background:#fff;border:2.5px solid #171B21;flex:0 0 auto}
+.mname{font-size:12.5px;font-weight:550}
+.mline{display:flex;align-items:center;gap:9px;padding:4px 0 4px 5px}
+.mbar{width:2.5px;height:30px;border-radius:2px;flex:0 0 auto;margin-left:1px}
+.mtext{font-size:11px;color:#6B7280}
+
+/* 路线图（带时刻） */
+.mtime{width:40px;flex:0 0 auto;font-size:10.5px;color:#A6ACB5;text-align:right;font-variant-numeric:tabular-nums}
+.mstop .mname{flex:1}
+.mline .mtext{flex:1}
+.mline{padding-left:0}
+.mline .mbar{margin-left:5px}
+.man{font-weight:600;color:#B45309;font-size:9.5px;margin-left:2px}
+.mend{padding:10px 0 4px 48px;font-size:10.5px;color:#A6ACB5}
+.stime{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:#8B919B;margin-left:auto}
+.stime input{border:1px solid var(--line);border-radius:7px;padding:2px 5px;font-size:11px;background:#fff;color:#374151}
+
+/* 高德跳转按钮 */
+.rowpin{
+  width:20px;height:20px;border-radius:6px;background:#F5F6F8;color:#8B919B;
+  font-size:10px;line-height:1;display:grid;place-items:center;flex:0 0 auto;
+}
+.rowpin:active{background:#E8F8F1;color:#047857}
+.mbtn.ghostbtn{background:#F5F6F8;color:#5B616B;margin-top:8px}
+
+/* 高德真实地图 */
+.map-slot{width:100%;height:340px;background:#F3F5F8;position:relative;overflow:hidden}
+.map-slot .amap-lb{
+  background:#fff;border:1px solid #E1E5EA;border-radius:8px;padding:2px 7px;
+  font-size:10.5px;color:#374151;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.08);
+  max-width:150px;overflow:hidden;text-overflow:ellipsis;
+}
+.gearbtn{width:26px;height:26px;border-radius:8px;background:#F3F5F7;color:#8B919B;font-size:12px;line-height:1;display:grid;place-items:center}
+.gearbtn:active{background:#E8EAEE;color:#374151}
+@media(min-width:1000px){.map-slot{height:400px}}
+
+.auto{font-weight:600;color:#047857;font-size:9.5px;margin-left:2px}

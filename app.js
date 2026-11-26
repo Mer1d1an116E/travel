@@ -110,12 +110,48 @@ function seed() {
   };
 }
 
-let S = load();
-if (!S._ts) S._ts = Date.now();
+function starterPack() {
+  const m = (cat, title) => it({ cat, title, p: { A: null, B: null } });
+  return [
+    m('证件类', '身份证'), m('证件类', '银行卡'), m('证件类', '少量现金'),
+    m('洗漱用品', '牙刷 / 牙膏'), m('洗漱用品', '洗面奶'), m('洗漱用品', '毛巾'),
+    m('电子设备', '充电器'), m('电子设备', '充电宝'), m('电子设备', '耳机'),
+    m('衣物', '换洗衣物'), m('衣物', '拖鞋'),
+    m('其他', '常用药'), m('其他', '雨伞'), m('其他', '防晒霜')
+  ];
+}
 
-function load() {
-  try { const raw = localStorage.getItem(LS); if (raw) return JSON.parse(raw); } catch (e) {}
-  return seed();
+let S = null;              // 当前打开的行程（DB.trips 里的同一个引用）
+let DB = loadDB();
+
+function blankTrip(name) {
+  return {
+    id: uid(), syncRoom: '', role: 'A',
+    room: { name: name || '新行程', days: 3, start: new Date(Date.now() + 864e5 * 14).toISOString().slice(0, 10) },
+    members: { A: { name: '我' }, B: { name: '朋友' } },
+    items: [], expenses: [], seen: { A: 0, B: 0 }, _ts: 0,
+    tab: 'packing', mapDay: 1, mode: 'taxi'
+  };
+}
+
+function loadDB() {
+  let raw = null;
+  try { raw = localStorage.getItem(LS); } catch (e) {}
+  if (raw) {
+    try {
+      const d = JSON.parse(raw);
+      if (d && Array.isArray(d.trips)) { d.currentId = null; return d; }
+      if (d && Array.isArray(d.items)) {          // 旧版单行程 → 迁移成一条行程
+        let oldRoom = '';
+        try { oldRoom = (JSON.parse(localStorage.getItem('tripsync_cfg') || '{}').room) || ''; } catch (e) {}
+        d.id = d.id || uid();
+        d.syncRoom = d.syncRoom || oldRoom;
+        return { trips: [d], currentId: null };
+      }
+    } catch (e) {}
+  }
+  const demo = seed(); demo.id = uid(); demo.syncRoom = '';
+  return { trips: [demo], currentId: null };
 }
 
 /* ==========================================================
@@ -140,7 +176,8 @@ function setStatus(status, msg) {
 }
 
 function save() {
-  try { localStorage.setItem(LS, JSON.stringify(S)); } catch (e) {}
+  try { localStorage.setItem(LS, JSON.stringify(DB)); } catch (e) {}
+  if (!S) return;
   dirty = true;
   schedulePush();
 }
@@ -152,12 +189,14 @@ function hdr() {
 }
 
 function payload() {
+  if (!S) return null;
   const seen = Object.assign({ A: 0, B: 0 }, S.seen || {});
   seen[S.role] = Date.now();
   S.seen = seen;
   return { room: S.room, members: S.members, items: S.items, expenses: S.expenses, seen, _ts: S._ts || 0 };
 }
 function docSig() {
+  if (!S) return '';
   return JSON.stringify({ r: S.room, m: S.members, i: S.items, e: S.expenses });
 }
 
@@ -172,7 +211,7 @@ function syncHint(e) {
 }
 
 async function push() {
-  if (!syncOn() || pushing) return;
+  if (!syncOn() || pushing || !S) return;
   pushing = true;
   setStatus('sync', '上传中…');
   try {
@@ -299,7 +338,7 @@ function mergeDoc(remote) {
 }
 
 async function syncOnce() {
-  if (!syncOn()) return;
+  if (!syncOn() || !S) return;
   try {
     const remote = await pull();
     const changed = mergeDoc(remote);
@@ -327,26 +366,34 @@ function startPolling() {
 
 function initSyncFromURL() {
   const q = new URLSearchParams(location.search);
-  const r = q.get('r');
-  if (!r) return false;
-  const u = q.get('u'), k = q.get('k');
-  let changed = false;
-  if (u && k && (!CFG.url || !CFG.key || CFG.room !== r)) {
-    CFG = { url: u, key: k, room: r };
-    cfgSave();
-    changed = true;
-  } else if (!CFG.room) { CFG.room = r; cfgSave(); }
+  const r = q.get('r'), u = q.get('u'), k = q.get('k');
   try { history.replaceState({}, '', location.pathname); } catch (e) {}  // 清掉地址栏里的密钥
-  return changed;
+  if (u && k) { CFG.url = u; CFG.key = k; cfgSave(); }
+  if (!r) return false;
+  let t = DB.trips.find(x => x.syncRoom === r);
+  if (!t) {
+    t = blankTrip('一起的行程');
+    t.syncRoom = r;
+    DB.trips.push(t);
+  }
+  openTrip(t);
+  return true;
 }
 
 function openTripSheet() {
   openSheet(`
     <div class="shead">行程设置</div>
+    <div style="font-size:11.5px;color:#8B919B;margin:-6px 0 10px">
+      同步：${S.syncRoom ? ((CFG.url && CFG.key) ? '已绑定房间 ' + S.syncRoom.slice(0, 6) + '…' : '已生成房间，但还没填 URL / Key') : '仅本机 · 点下面按钮生成邀请链接'}
+    </div>
     <div class="srow"><label>名称</label><input id="tName" value="${esc(S.room.name)}"></div>
+    <div class="srow"><label>城市</label><input id="tCity" placeholder="如：上海（用于判断有无地铁）" value="${esc(S.room.city || '')}"></div>
     <div class="srow"><label>天数</label><input id="tDays" type="number" min="1" max="30" value="${S.room.days}"></div>
     <div class="srow"><label>出发</label><input id="tStart" type="date" value="${esc(S.room.start)}"></div>
+    <div class="srow"><label>我</label><input id="tNameA" placeholder="你的名字" value="${esc(S.members.A.name)}"></div>
+    <div class="srow"><label>对方</label><input id="tNameB" placeholder="朋友的名字" value="${esc(S.members.B.name)}"></div>
     <button class="primary" data-act="tripSave">保存</button>
+    <button class="ghost" data-act="syncShare">📋 复制邀请链接给朋友（同一行程一起填）</button>
     <button class="ghost" data-act="wipe" style="color:#B91C1C">清空所有条目和账目（重新开始）</button>
     <button class="ghost" data-act="close">取消</button>`);
 }
@@ -356,7 +403,7 @@ function openSyncSheet() {
   const other = S.role === 'A' ? 'B' : 'A';
   const otherSeen = (S.seen || {})[other];
   const st = !on ? '仅本机（数据只存在这台设备）'
-    : syncState.status === 'ok' ? '✅ 已连接 · 房间 ' + CFG.room.slice(0, 8) + '…'
+    : syncState.status === 'ok' ? '✅ 已连接 · 房间 ' + (CFG.room || '').slice(0, 8) + '…'
     : syncState.status === 'error' ? '⚠️ ' + syncState.msg
     : '⟳ ' + syncState.msg;
   const feedHtml = FEED.length
@@ -372,7 +419,7 @@ function openSyncSheet() {
     ${on ? `<div style="font-size:11.5px;color:#A6ACB5;margin-bottom:10px">${esc(S.members[other].name)} ${otherSeen ? '上次改动 ' + fmtAgo(Date.now() - otherSeen) : '暂无记录'}</div>` : '<div style="height:8px"></div>'}
     <div class="srow"><label>URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" value="${esc(CFG.url || '')}"></div>
     <div class="srow"><label>Key</label><input id="sKey" placeholder="anon public key（eyJhb…）" value="${esc(CFG.key || '')}"></div>
-    <div class="srow"><label>房间</label><input id="sRoom" placeholder="留空自动生成" value="${esc(CFG.room || '')}"></div>
+    <div class="srow"><label>房间</label><input id="sRoom" placeholder="留空自动生成" value="${esc((S && S.syncRoom) || '')}"></div>
     <button class="primary" data-act="syncSave">保存并连接</button>
     ${on ? `<button class="ghost" data-act="syncShare">复制分享链接给朋友</button>
             <button class="ghost" data-act="syncExport">导出存档（复制 JSON）</button>
@@ -470,8 +517,8 @@ function haversine(a, b) {
   const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * d) * Math.cos(b.lat * d) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
 }
-const SPEED = { walk: 4500, taxi: 22000, transit: 16000 };
-const OVERHEAD = { walk: 0, taxi: 180, transit: 420 };
+const SPEED = { walk: 4500, taxi: 22000, transit: 16000, metro: 32000 };
+const OVERHEAD = { walk: 0, taxi: 180, transit: 420, metro: 300 };
 function legSeconds(m, mode) {
   return Math.round((m * 1.3) / (SPEED[mode] / 3600) + OVERHEAD[mode]);
 }
@@ -490,10 +537,92 @@ function totalSeconds(pts, mode) {
   return t;
 }
 
+/* ---------------- 行程首页 ---------------- */
+function withTrip(t, fn) {
+  const old = S; S = t;
+  try { return fn(); } finally { S = old; }
+}
+
+function tripCard(t) {
+  const n = t.items.filter(i => !i._del).length;
+  const warn = withTrip(t, () => t.items.filter(i => ['hl-yellow', 'hl-red'].includes(rowFlag(i))).length);
+  const est = withTrip(t, () => budget().est);
+  const syncTxt = !t.syncRoom ? '仅本机' : (CFG.url && CFG.key ? '已同步' : '待配置');
+  return `<div class="tripcard" data-act="open" data-id="${t.id}">
+    <div class="tc-top">
+      <div class="tc-name">${esc(t.room.name)}</div>
+      <span class="tc-badge ${t.syncRoom ? 'on' : ''}">${syncTxt}</span>
+    </div>
+    <div class="tc-meta">${esc(t.room.start || '')} · ${t.room.days} 天 · ${esc(t.members.A.name)} &amp; ${esc(t.members.B.name)}</div>
+    <div class="tc-stat">
+      <span><b>${n}</b> 条目</span>
+      <span><b class="${warn ? 'warn' : ''}">${warn}</b> 待处理</span>
+      <span><b>${money(est)}</b> 预估</span>
+    </div>
+    <button class="tc-del" data-act="delTrip" data-id="${t.id}" title="删除行程">×</button>
+  </div>`;
+}
+
+function renderHome() {
+  $('#roomName').textContent = '我的行程';
+  $('#roomMeta').textContent = DB.trips.length + ' 个行程';
+  $('#members').innerHTML = '';
+  $('#budgetStrip').innerHTML = '';
+  $('#tabs').innerHTML = '';
+  $('#alertBar').hidden = true;
+  $('#mapPanel').innerHTML = '';
+  $('#panel').innerHTML = DB.trips.map(tripCard).join('') +
+    `<button class="newtrip" data-act="newTrip">＋ 新建行程</button>
+     <div class="homefoot">点卡片进入 · 数据存在本机，配置 Supabase 后两人实时同步</div>`;
+}
+
+function openTrip(t) {
+  S = t;
+  if (!S.role) S.role = 'A';
+  if (!S.seen) S.seen = { A: 0, B: 0 };
+  if (!S.tab) S.tab = 'packing';
+  if (!S.mapDay) S.mapDay = 1;
+  if (!S.mode) S.mode = 'taxi';
+  DB.currentId = t.id;
+  CFG.room = t.syncRoom || '';
+  cfgSave();
+  document.body.classList.remove('home');
+  const back = $('#backBtn'); if (back) back.hidden = false;
+  render();
+  if (CFG.url && CFG.key && CFG.room) { setStatus('sync', '连接中…'); syncOnce(); startPolling(); }
+  else { setStatus('off', '仅本机'); clearInterval(pollTimer); clearInterval(beatTimer); }
+}
+
+function goHome() {
+  S = null; DB.currentId = null;
+  clearInterval(pollTimer); clearInterval(beatTimer);
+  document.body.classList.add('home');
+  const back = $('#backBtn'); if (back) back.hidden = true;
+  save();
+  renderHome();
+}
+
+function openNewTripSheet() {
+  openSheet(`
+    <div class="shead">新建行程</div>
+    <div class="srow"><label>名称</label><input id="nTripName" placeholder="如：厦门 · 周末"></div>
+    <div class="srow"><label>天数</label><input id="nTripDays" type="number" min="1" max="30" value="3"></div>
+    <div class="srow"><label>出发</label><input id="nTripStart" type="date" value="${new Date(Date.now() + 864e5 * 14).toISOString().slice(0, 10)}"></div>
+    <div class="srow"><label>我</label><input id="nTripA" placeholder="你的名字"></div>
+    <div class="srow"><label>对方</label><input id="nTripB" placeholder="朋友的名字"></div>
+    <div class="srow" style="align-items:center"><label>模板</label>
+      <label style="font-size:12px;color:#6B7280;display:flex;align-items:center;gap:6px">
+        <input id="nTripTpl" type="checkbox" style="flex:0 0 auto;width:16px" checked> 带一份基础行李清单
+      </label>
+    </div>
+    <button class="primary" data-act="doNewTrip">创建</button>
+    <button class="ghost" data-act="close">取消</button>`);
+}
+
 /* ---------------- 渲染：顶栏 ---------------- */
 function renderTop() {
   $('#roomName').textContent = S.room.name;
-  $('#roomMeta').textContent = `${S.room.days} 天 · 出发 ${S.room.start}`;
+  $('#roomMeta').textContent = (S.room.city ? S.room.city + ' · ' : '') + `${S.room.days} 天 · 出发 ${S.room.start}`;
   const seen = S.seen || {};
   const live = s => (seen[s] || 0) && Date.now() - seen[s] < 90000;
   $('#members').innerHTML = ['A', 'B'].map(s =>
@@ -625,7 +754,7 @@ function rowHTML(i) {
   return `<div class="titem ${flag}">
     <div class="trow">
       <div class="tname">
-        <div class="t1"><button class="hldot ${flag || (i.d.hl === 'none' ? 'off' : '')}" data-act="hl" data-id="${i.id}" title="设置这一行的高亮"></button>${esc(i.title)}<button class="rowdel" data-act="del" data-id="${i.id}" title="删除">×</button></div>
+        <div class="t1"><button class="hldot ${flag || (i.d.hl === 'none' ? 'off' : '')}" data-act="hl" data-id="${i.id}" title="设置这一行的高亮"></button>${esc(i.title)}${(i.pl && i.pl.lat) ? `<button class="rowpin" data-act="amap" data-id="${i.id}" title="在高德地图打开这个点">📍</button>` : ''}<button class="rowdel" data-act="del" data-id="${i.id}" title="删除">×</button></div>
         <div class="t2 ${subCls}">${esc(sub)}${isPlan && i.pl.price ? ' · ' + money(i.pl.price) + '/人' : ''}</div>
       </div>
       ${cellHTML(i, 'A')}
@@ -664,70 +793,331 @@ function placesHTML(kind) {
   </div>`;
 }
 
+/* ---------------- 真实地图（高德 JS API） ---------------- */
+const MAP_KEY = 'tripsync_map';
+let AMAP = { map: null, host: null, overlays: [], loading: null, failed: false, seq: 0 };
+
+function mapCfg() { try { return JSON.parse(localStorage.getItem(MAP_KEY) || '{}'); } catch (e) { return {}; } }
+function mapReady() { const c = mapCfg(); return !!(c.key && !AMAP.failed); }
+
+function loadAMap(key, code) {
+  if (window.AMap) return Promise.resolve();
+  if (AMAP.loading) return AMAP.loading;
+  AMAP.loading = new Promise((res, rej) => {
+    window._AMapSecurityConfig = { securityJsCode: code || '' };
+    const sc = document.createElement('script');
+    sc.src = 'https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(key);
+    sc.onload = () => res();
+    sc.onerror = () => rej(new Error('脚本加载失败'));
+    document.head.appendChild(sc);
+  });
+  return AMAP.loading;
+}
+
+function drawAmap(pts) {
+  const map = AMAP.map, A = window.AMap;
+  if (!map || !A) return;
+  if (AMAP.overlays.length) map.remove(AMAP.overlays);
+  AMAP.overlays = [];
+  if (!pts.length) { map.setCenter([116.397, 39.909]); map.setZoom(10); return; }
+
+  const COLORS = { walk: '#10B981', taxi: '#3B82F6', transit: '#F59E0B', metro: '#7C3AED' };
+  for (let k = 1; k < pts.length; k++) {
+    const L = legInfo(pts, k);
+    AMAP.overlays.push(new A.Polyline({
+      path: [[pts[k - 1].pl.lng, pts[k - 1].pl.lat], [pts[k].pl.lng, pts[k].pl.lat]],
+      strokeColor: COLORS[L.mode] || '#3B82F6',
+      strokeWeight: L.mode === 'metro' ? 7 : 5,
+      strokeOpacity: .9, showDir: true, lineJoin: 'round'
+    }));
+  }
+  pts.forEach((p, k) => {
+    const mk = new A.Marker({
+      position: [p.pl.lng, p.pl.lat], title: p.title,
+      label: {
+        content: '<div class="amap-lb">' + (k + 1) + '. ' + esc(p.title) + '</div>',
+        direction: 'top', offset: new A.Pixel(0, -4)
+      }
+    });
+    mk.on('click', () => openLegSheet(p.id));
+    AMAP.overlays.push(mk);
+  });
+  map.add(AMAP.overlays);
+  try { map.setFitView(AMAP.overlays, false, [70, 70, 70, 70]); } catch (e) {}
+}
+
+async function mountAmap(pts) {
+  const slot = document.getElementById('mapSlot');
+  if (!slot) return;
+  const seq = ++AMAP.seq;
+  const c = mapCfg();
+  try {
+    await loadAMap(c.key, c.code);
+    if (seq !== AMAP.seq) return;
+    if (!AMAP.host) {
+      AMAP.host = document.createElement('div');
+      AMAP.host.style.cssText = 'width:100%;height:100%';
+    }
+    slot.appendChild(AMAP.host);
+    if (!AMAP.map) {
+      AMAP.map = new window.AMap.Map(AMAP.host, { zoom: 11, viewMode: '2D', resizeEnable: true });
+    } else {
+      AMAP.map.resize();
+    }
+    drawAmap(pts);
+  } catch (e) {
+    AMAP.failed = true;
+    toast('地图加载失败：' + e.message + '（先看下 Key / 安全密钥 / 域名白名单）');
+    render();
+  }
+}
+
+function openMapKeySheet() {
+  const c = mapCfg();
+  openSheet(`
+    <div class="shead">真实地图 · 高德 JS API</div>
+    <div style="font-size:11.5px;color:#8B919B;margin:-6px 0 10px">不填也能用，网页继续显示现在这张示意图。</div>
+    <div class="srow"><label>Key</label><input id="mkKey" placeholder="Web端(JS API) Key" value="${esc(c.key || '')}"></div>
+    <div class="srow"><label>安全密钥</label><input id="mkCode" placeholder="securityJsCode（jscode）" value="${esc(c.code || '')}"></div>
+    <button class="primary" data-act="saveMapKey">保存并加载</button>
+    ${c.key ? '<button class="ghost" data-act="clearMapKey">关闭真实地图，回到示意图</button>' : ''}
+    <button class="ghost" data-act="close">取消</button>
+    <details style="margin-top:12px">
+      <summary style="font-size:11.5px;color:#6B7280;cursor:pointer">怎么拿 Key（约 10 分钟，需实名）</summary>
+      <div style="margin-top:8px;padding:10px;border-radius:10px;background:#F6F7F9;font-size:11px;line-height:1.7;color:#6B7280">
+        1. lbs.amap.com 注册个人开发者 → 完成实名<br>
+        2. 控制台 → 应用管理 → 创建新应用<br>
+        3. 添加 Key → 服务平台选「Web端(JS API)」<br>
+        4. 同页会生成「安全密钥 jscode」，两个都要填到上面<br>
+        5. 域名白名单填：<code style="background:#fff;padding:1px 4px;border-radius:4px">mer1d1an116e.github.io</code>
+      </div>
+    </details>`);
+}
+
+/* ---------------- 路径规划（经 Supabase Edge Function 代理） ---------------- */
+const ROUTE_CACHE_KEY = 'tripsync_routes';
+const ROUTE_TTL = 7 * 864e5;
+
+function routeCacheAll() { try { return JSON.parse(localStorage.getItem(ROUTE_CACHE_KEY) || '{}'); } catch (e) { return {}; } }
+function routeCachePut(k, data) {
+  const all = routeCacheAll();
+  all[k] = { at: Date.now(), data };
+  try { localStorage.setItem(ROUTE_CACHE_KEY, JSON.stringify(all)); } catch (e) {}
+}
+function planReady() { return !!(CFG.url && CFG.key); }
+
+async function callPlan(a, b, mode) {
+  if (!planReady()) throw new Error('先在 ☁ 里配好 Supabase 才能自动规划');
+  const city = (S.room.city || '').trim();
+  const k = [a.lng.toFixed(5), a.lat.toFixed(5), b.lng.toFixed(5), b.lat.toFixed(5), city, mode || 'transit'].join('|');
+  const hit = routeCacheAll()[k];
+  if (hit && Date.now() - hit.at < ROUTE_TTL) return hit.data;
+
+  const res = await fetch(CFG.url.replace(/\/+$/, '') + '/functions/v1/transit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: CFG.key, Authorization: 'Bearer ' + CFG.key },
+    body: JSON.stringify({ from: a.lng + ',' + a.lat, to: b.lng + ',' + b.lat, city, mode: mode || 'transit' })
+  });
+  let d;
+  try { d = await res.json(); } catch (e) { throw new Error('返回不是 JSON（函数可能还没部署）'); }
+  if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
+  routeCachePut(k, d);
+  return d;
+}
+
+async function planDay(day) {
+  const pts = route(day);
+  if (pts.length < 2) { toast('这一天至少要有 2 个地点'); return; }
+  if (!planReady()) { toast('先在 ☁ 里配好 Supabase'); return; }
+  toast('正在规划，可能需要几秒…');
+  let ok = 0;
+  for (let k = 1; k < pts.length; k++) {
+    const it = pts[k];
+    try {
+      const d = await callPlan(pts[k - 1].pl, it.pl, 'transit');
+      const metro = d.steps.find(x => x.mode === 'metro');
+      it.d.leg = {
+        mode: metro ? 'metro' : 'transit',
+        line: d.summary,
+        mins: Math.max(1, Math.round(d.dur / 60)),
+        auto: true
+      };
+      it._ts = Date.now();
+      ok++;
+    } catch (e) {
+      toast('规划失败：' + e.message);
+      break;
+    }
+  }
+  render();
+  if (ok) toast('已自动填好 ' + ok + ' 段路线');
+}
+
+async function autoLegFromSheet(id) {
+  const it = S.items.find(x => x.id === id);
+  if (!it) return;
+  if (it.d.day == null) { toast('这个地点还没排进某一天'); return; }
+  const pts = route(it.d.day);
+  const idx = pts.findIndex(x => x.id === id);
+  if (idx < 1) { toast('这是当天第一个点，没有上一站'); return; }
+  if (!planReady()) { toast('先在 ☁ 里配好 Supabase'); return; }
+  toast('查询中…');
+  try {
+    const d = await callPlan(pts[idx - 1].pl, it.pl, 'transit');
+    const metro = d.steps.find(x => x.mode === 'metro');
+    if (legState) {
+      legState.mode = metro ? 'metro' : 'transit';
+      legState.auto = true;
+      $$('.opt', sheet).forEach(b => b.classList.toggle('on', b.dataset.v === legState.mode));
+    }
+    const li = $('#legLineIn'); if (li) li.value = d.summary;
+    const mi = $('#legMinsIn'); if (mi) mi.value = Math.max(1, Math.round(d.dur / 60));
+    toast('已填入，点保存生效');
+  } catch (e) {
+    toast('规划失败：' + e.message);
+  }
+}
+
+/* ---------------- 交通方式与路段 ---------------- */
+const MODES = [
+  { k: 'walk',    label: '步行', color: '#10B981', dash: '6 6' },
+  { k: 'taxi',    label: '打车', color: '#3B82F6', dash: '0' },
+  { k: 'transit', label: '公交', color: '#F59E0B', dash: '2 7' },
+  { k: 'metro',   label: '地铁', color: '#7C3AED', dash: '0' }
+];
+const MODE_OF = {};
+MODES.forEach(m => { MODE_OF[m.k] = m; });
+
+const METRO_CITIES = ['北京', '上海', '广州', '深圳', '成都', '重庆', '杭州', '武汉', '西安', '南京',
+  '天津', '苏州', '郑州', '长沙', '青岛', '沈阳', '大连', '昆明', '合肥', '福州', '厦门', '南宁',
+  '南昌', '贵阳', '石家庄', '太原', '兰州', '乌鲁木齐', '呼和浩特', '温州', '宁波', '无锡', '佛山',
+  '东莞', '香港', '澳门', '长春', '哈尔滨', '济南', '徐州', '绍兴', '常州', '洛阳', '芜湖', '南通'];
+
+function legOf(item) { return (item && item.d && item.d.leg) || {}; }
+function legMode(item) { return legOf(item).mode || S.mode || 'taxi'; }
+function legLine(item) { return legOf(item).line || ''; }
+function legMins(item) {
+  const v = legOf(item).mins;
+  return (v === 0 || v) ? Number(v) : null;
+}
+function legInfo(pts, k) {                 // 第 k 段：pts[k-1] → pts[k]
+  const to = pts[k];
+  const mode = legMode(to);
+  const m = haversine(pts[k - 1].pl, to.pl);
+  const est = legSeconds(m, mode);
+  const man = legMins(to);
+  return { mode, line: legLine(to), m, est, sec: man != null ? Math.round(man * 60) : est, manual: man != null, auto: !!legOf(to).auto };
+}
+function daySeconds(pts) {
+  let t = 0;
+  for (let k = 1; k < pts.length; k++) t += legInfo(pts, k).sec;
+  return t;
+}
+
 /* ---------------- 渲染：地图 ---------------- */
 function renderMap() {
   const day = S.mapDay || 1;
-  const mode = S.mode || 'taxi';
   const pts = route(day);
-  const modeName = { walk: '步行', taxi: '打车', transit: '公交' };
-
-  const dayTabs = Array.from({ length: S.room.days }, (_, k) => k + 1).map(d =>
-    `<button class="${d === day ? 'on' : ''}" data-act="mapday" data-day="${d}">Day ${d}</button>`).join('');
-
-  const segs = [];
-  for (let k = 1; k < pts.length; k++) {
-    const m = haversine(pts[k - 1].pl, pts[k].pl);
-    segs.push({ m, sec: legSeconds(m, mode) });
-  }
-  const total = segs.reduce((s, x) => s + x.sec, 0);
+  const view = S.mapView || 'map';
+  const total = daySeconds(pts);
   let maxSpan = 0;
   for (let x = 0; x < pts.length; x++) for (let y = x + 1; y < pts.length; y++)
     maxSpan = Math.max(maxSpan, haversine(pts[x].pl, pts[y].pl));
 
+  const dayTabs = Array.from({ length: S.room.days }, (_, k) => k + 1).map(d =>
+    `<button class="${d === day ? 'on' : ''}" data-act="mapday" data-day="${d}">Day ${d}</button>`).join('');
+
   const warnList = [];
   if (pts.length > 5) warnList.push(`今天安排了 ${pts.length} 个点，行程过满，建议删减或分到第二天。`);
-  if (total > 7200) warnList.push(`总通勤 ${fmtDur(total)}，路上时间偏多，建议调整顺序或打车。`);
+  if (total > 7200) warnList.push(`总通勤 ${fmtDur(total)}，路上时间偏多，建议调整顺序或换交通方式。`);
   if (maxSpan > 40000) warnList.push(`最远两点相距 ${(maxSpan / 1000).toFixed(1)} km，跨度偏大。`);
 
-  const legList = pts.map((p, k) => {
-    const seg = k > 0 ? segs[k - 1] : null;
-    return `<div class="leg">
+  const legRows = pts.map((p, k) => {
+    if (k === 0) return `<div class="leg"><span class="idx">1</span><span class="nm">${esc(p.title)}</span><span class="tm">起点</span></div>`;
+    const L = legInfo(pts, k);
+    const mc = MODE_OF[L.mode] || MODE_OF.taxi;
+    return `<button class="leg" data-act="leg" data-id="${p.id}">
       <span class="idx">${k + 1}</span>
       <span class="nm">${esc(p.title)}</span>
-      <span class="tm">${seg ? fmtDur(seg.sec) + ' · ' + (seg.m / 1000).toFixed(1) + 'km' : '起点'}</span>
-      <span class="mv">
-        <button data-act="mv" data-id="${p.id}" data-dir="-1" title="上移">↑</button>
-        <button data-act="mv" data-id="${p.id}" data-dir="1" title="下移">↓</button>
-      </span>
-    </div>`;
+      <span class="tm"><i class="dc" style="background:${mc.color}"></i>${mc.label}${L.line ? ' · ' + esc(L.line) : ''} · ${fmtDur(L.sec)}${L.auto ? ' <b class="auto">自动</b>' : L.manual ? ' ✎' : ''}</span>
+    </button>`;
   }).join('');
 
   $('#mapPanel').innerHTML = `
     <div class="mapbox">
       <div class="mtop">
-        <span class="ttl">路线地图</span>
+        <span class="ttl">路线</span>
+        <div style="display:flex;align-items:center;gap:6px">
+        <button class="gearbtn" data-act="mapkey" title="地图设置">⚙</button>
         <div class="modes">
-          ${['walk', 'taxi', 'transit'].map(m =>
-            `<button class="${m === mode ? 'on' : ''}" data-act="mode" data-mode="${m}">${modeName[m]}</button>`).join('')}
+          <button class="${view === 'map' ? 'on' : ''}" data-act="mapview" data-v="map">地图</button>
+          <button class="${view === 'metro' ? 'on' : ''}" data-act="mapview" data-v="metro">路线</button>
+        </div>
         </div>
       </div>
       <div class="daytabs">${dayTabs}</div>
-      ${mapSVG(pts)}
+      <div class="mdefault">
+        <span class="lbl">默认</span>
+        ${MODES.map(m => `<button class="${(S.mode || 'taxi') === m.k ? 'on' : ''}" data-act="mode" data-mode="${m.k}">${m.label}</button>`).join('')}
+        ${view === 'metro' ? `<label class="stime">出发<input type="time" data-act="stime" value="${esc(S.room.startTime || '09:00')}"></label>` : ''}
+      </div>
+      ${view === 'metro' ? routeDiagram(pts) : (mapReady() ? '<div id="mapSlot" class="map-slot"></div>' : mapSVG(pts))}
       <div class="stats">
         <div><span>点位</span><b class="${pts.length > 5 ? 'warn' : ''}">${pts.length} 个</b></div>
         <div><span>总通勤</span><b class="${total > 7200 ? 'warn' : ''}">${pts.length > 1 ? fmtDur(total) : '—'}</b></div>
         <div><span>最大跨度</span><b class="${maxSpan > 40000 ? 'warn' : ''}">${pts.length > 1 ? (maxSpan / 1000).toFixed(1) + ' km' : '—'}</b></div>
       </div>
       ${warnList.map(w => `<div class="mwarn">⚠️ ${w}</div>`).join('')}
-      <div class="leglist">${legList || '<div class="empty" style="border:0;padding:14px">这一天还没有安排地点</div>'}</div>
+      <div class="leglist">${legRows || '<div class="empty" style="border:0;padding:14px">这一天还没有安排地点</div>'}</div>
+      ${pts.length > 1 ? '<div style="font-size:10.5px;color:#A6ACB5;padding:0 12px 8px">点任意一段可单独改交通方式和地铁线路</div>' : ''}
+      <button class="mbtn ghostbtn" data-act="planday" data-day="${day}">🛣 自动规划这一天（高德实时路线）</button>
       <button class="mbtn" data-act="optimize" data-day="${day}">✨ 一键优化顺序（省时）</button>
+      <button class="mbtn ghostbtn" data-act="copyday" data-day="${day}">📋 复制今天的地点清单（名称 + 坐标）</button>
     </div>`;
+
+  if (view !== 'metro' && mapReady()) mountAmap(pts);
+}
+
+function hm(mins) {
+  const h = Math.floor(mins / 60) % 24;
+  const m = Math.round(mins % 60);
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+function startMinutes() {
+  const t = (S.room.startTime || '09:00').split(':');
+  return (parseInt(t[0], 10) || 9) * 60 + (parseInt(t[1], 10) || 0);
+}
+
+function routeDiagram(pts) {
+  if (!pts.length) return `<div class="empty" style="margin:12px">把地点排进 Day ${S.mapDay || 1}，这里会按顺序列出每一段路</div>`;
+  let acc = startMinutes();
+  let out = '<div class="metro">';
+  pts.forEach((p, k) => {
+    if (k > 0) {
+      const L = legInfo(pts, k);
+      const mc = MODE_OF[L.mode] || MODE_OF.taxi;
+      acc += L.sec / 60;
+      out += `<div class="mline">
+        <span class="mtime"></span>
+        <span class="mbar" style="background:${mc.color}"></span>
+        <span class="mtext">${mc.label}${L.line ? ' · ' + esc(L.line) : ''} · ${fmtDur(L.sec)}${L.auto ? ' <b class="auto">自动</b>' : L.manual ? ' <b class="man">手填</b>' : ''}</span>
+      </div>`;
+    }
+    out += `<div class="mstop">
+      <span class="mtime">${hm(acc)}</span>
+      <span class="mdot"></span>
+      <span class="mname">${k + 1}. ${esc(p.title)}</span>
+    </div>`;
+  });
+  out += `<div class="mend">预计 ${hm(acc)} 到达最后一个点${pts.length > 1 ? '，共 ' + fmtDur(daySeconds(pts)) + ' 在路上' : ''}</div>`;
+  out += '</div>';
+  return out;
 }
 
 function mapSVG(pts) {
   if (!pts.length) {
     return `<svg class="map" viewBox="0 0 640 260" preserveAspectRatio="xMidYMid meet">
-      <text x="320" y="130" text-anchor="middle" font-size="13" fill="#A6ACB5">把地点排进 Day ${S.mapDay}，这里会自动连线</text>
+      <text x="320" y="130" text-anchor="middle" font-size="13" fill="#A6ACB5">把地点排进 Day ${S.mapDay || 1}，这里会自动连线</text>
     </svg>`;
   }
   const W = 640, H = 380, P = 54;
@@ -737,32 +1127,34 @@ function mapSVG(pts) {
   if (maxLng - minLng < 1e-3) { minLng -= 0.01; maxLng += 0.01; }
   const X = lng => P + ((lng - minLng) / (maxLng - minLng)) * (W - 2 * P);
   const Y = lat => H - P - ((lat - minLat) / (maxLat - minLat)) * (H - 2 * P);
-
   const coords = pts.map(p => ({ x: X(p.pl.lng), y: Y(p.pl.lat), p }));
-  const path = coords.map((c, k) => (k ? 'L' : 'M') + c.x.toFixed(1) + ' ' + c.y.toFixed(1)).join(' ');
-
-  const mode = S.mode || 'taxi';
-  const dash = mode === 'walk' ? '6 6' : mode === 'transit' ? '2 7' : '0';
 
   let out = `<svg class="map" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
-  out += `<defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3B82F6"/><stop offset="1" stop-color="#10B981"/></linearGradient></defs>`;
-  // 网格
   for (let gx = P; gx <= W - P; gx += (W - 2 * P) / 6)
     out += `<line x1="${gx}" y1="${P - 12}" x2="${gx}" y2="${H - P + 12}" stroke="#EEF1F5"/>`;
   for (let gy = P - 12; gy <= H - P + 12; gy += (H - 2 * P) / 5)
     out += `<line x1="${P - 12}" y1="${gy}" x2="${W - P + 12}" y2="${gy}" stroke="#EEF1F5"/>`;
 
-  out += `<path d="${path}" fill="none" stroke="url(#lg)" stroke-width="3.2" stroke-linecap="round"
-           stroke-linejoin="round" stroke-dasharray="${dash}"/>`;
-
-  // 每段耗时标签
   for (let k = 1; k < coords.length; k++) {
     const a = coords[k - 1], b = coords[k];
+    const L = legInfo(pts, k);
+    const mc = MODE_OF[L.mode] || MODE_OF.taxi;
+    out += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"
+      stroke="${mc.color}" stroke-width="${L.mode === 'metro' ? 4.4 : 3}" stroke-linecap="round"
+      stroke-dasharray="${mc.dash}" opacity=".92"/>`;
+  }
+
+  for (let k = 1; k < coords.length; k++) {
+    const a = coords[k - 1], b = coords[k];
+    const L = legInfo(pts, k);
+    const mc = MODE_OF[L.mode] || MODE_OF.taxi;
+    const txt = mc.label + (L.line ? ' ' + L.line : '') + ' · ' + fmtDur(L.sec);
+    let w = 14;
+    for (const ch of txt) w += ch.charCodeAt(0) > 127 ? 9.6 : 5.4;
+    w = Math.min(w, 190);
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-    const sec = legSeconds(haversine(a.p.pl, b.p.pl), mode);
-    out += `<rect x="${mx - 27}" y="${my - 10}" width="54" height="18" rx="9" fill="#fff" opacity=".92" stroke="#E5E8ED"/>`;
-    out += `<text x="${mx}" y="${my + 3.5}" text-anchor="middle" font-size="10" fill="#5B616B">${fmtDur(sec)}</text>`;
+    out += `<rect x="${(mx - w / 2).toFixed(1)}" y="${(my - 10).toFixed(1)}" width="${w.toFixed(1)}" height="19" rx="9.5" fill="#fff" opacity=".95" stroke="${mc.color}" stroke-opacity=".45"/>`;
+    out += `<text x="${mx.toFixed(1)}" y="${(my + 3.6).toFixed(1)}" text-anchor="middle" font-size="10" fill="${mc.color}">${esc(txt)}</text>`;
   }
 
   coords.forEach((c, k) => {
@@ -774,9 +1166,12 @@ function mapSVG(pts) {
     out += `<text x="${c.x}" y="${c.y + 27}" text-anchor="middle" font-size="10.5" fill="#5B616B">${esc(label)}</text>`;
   });
 
-  out += `<g transform="translate(16,${H - 26})">
+  const lx = 16, ly = H - 26;
+  out += `<g transform="translate(${lx},${ly})">
     <circle cx="6" cy="0" r="5" fill="#fff" stroke="#2563EB" stroke-width="2"/><text x="16" y="4" font-size="9.5" fill="#8B919B">景点</text>
     <circle cx="66" cy="0" r="5" fill="#fff" stroke="#F59E0B" stroke-width="2"/><text x="76" y="4" font-size="9.5" fill="#8B919B">餐厅</text>
+    <line x1="112" y1="0" x2="134" y2="0" stroke="#7C3AED" stroke-width="3.4"/><text x="140" y="4" font-size="9.5" fill="#8B919B">地铁</text>
+    <line x1="176" y1="0" x2="198" y2="0" stroke="#10B981" stroke-width="3" stroke-dasharray="6 6"/><text x="204" y="4" font-size="9.5" fill="#8B919B">步行</text>
   </g>`;
   out += `</svg>`;
   return out;
@@ -798,6 +1193,35 @@ function toast(msg) {
 function bump(i) { i.d.version += 1; i.d.confirms = {}; i._ts = Date.now(); }
 
 let sheetState = null;
+
+let legState = null;
+
+function openLegSheet(id) {
+  const i = S.items.find(x => x.id === id);
+  if (!i) return;
+  const cur = legMode(i);
+  legState = { id, mode: cur };
+  const city = (S.room.city || '').trim();
+  const known = !city || METRO_CITIES.some(c => city.indexOf(c) >= 0);
+  let estTxt = '';
+  if (i.d.day != null) {
+    const dp = route(i.d.day);
+    const idx = dp.findIndex(x => x.id === i.id);
+    if (idx > 0) estTxt = '（约 ' + Math.round(legInfo(dp, idx).est / 60) + ' 分钟）';
+  }
+  openSheet(`
+    <div class="shead">怎么去「${esc(i.title)}」</div>
+    <div class="opts">
+      ${MODES.map(m => `<button class="opt ${cur === m.k ? 'on' : ''}" data-act="pickleg" data-v="${m.k}">${m.label}</button>`).join('')}
+    </div>
+    <div class="srow"><label>线路</label><input id="legLineIn" placeholder="如：3号线 4站 / 换乘2号线" value="${esc(legLine(i))}"></div>
+    <div class="srow"><label>时长</label><input id="legMinsIn" type="number" min="0" placeholder="留空＝自动估算${estTxt}" value="${legMins(i) != null ? legMins(i) : ''}"></div>
+    ${known ? '' : `<div style="font-size:11px;color:#B45309;margin:-2px 0 8px">「${esc(city)}」不在内置地铁城市里，仍可手动记线路。</div>`}
+    <div style="font-size:10.5px;color:#A6ACB5;margin-bottom:8px">线路只是备注，用来在「地铁图」里显示；时间按距离估算。</div>
+    <button class="primary" data-act="saveleg">保存</button>
+    <button class="ghost" data-act="autoleg" data-id="${id}">🛣 自动规划这一段</button>
+    <button class="ghost" data-act="close">取消</button>`);
+}
 
 function openHlSheet(id) {
   const i = S.items.find(x => x.id === id);
@@ -847,7 +1271,8 @@ function openAddSheet(kind) {
       <select id="nCat">${catOpts}<option value="__new">＋ 新建分类</option></select>
     </div>
     <div class="srow" id="newCatRow" hidden><label>新分类</label><input id="nCatNew" placeholder="分类名"></div>
-    ${isPlan ? `<div class="srow"><label>人均</label><input id="nPrice" type="number" min="0" placeholder="0"></div>` : ''}
+    ${isPlan ? `<div class="srow"><label>人均</label><input id="nPrice" type="number" min="0" placeholder="0"></div>
+    <div class="srow"><label>坐标</label><input id="nCoord" placeholder="可选：31.2304, 121.4737"></div>` : ''}
     <button class="primary" data-act="doAdd" data-kind="${kind}">添加</button>
     <button class="ghost" data-act="close">取消</button>`);
   $('#nCat').addEventListener('change', e => {
@@ -873,7 +1298,7 @@ document.addEventListener('click', e => {
   if (!t) return;
   const act = t.dataset.act;
   const id = t.dataset.id;
-  const item = id ? S.items.find(x => x.id === id) : null;
+  const item = (id && S) ? S.items.find(x => x.id === id) : null;
 
   switch (act) {
     case 'role':
@@ -968,6 +1393,86 @@ document.addEventListener('click', e => {
       S.mapDay = parseInt(t.dataset.day, 10); render();
       break;
 
+    case 'mapview':
+      S.mapView = t.dataset.v; render();
+      break;
+
+    case 'mapkey':
+      openMapKeySheet();
+      break;
+
+    case 'planday':
+      planDay(parseInt(t.dataset.day, 10));
+      break;
+
+    case 'autoleg':
+      autoLegFromSheet(id);
+      break;
+
+    case 'saveMapKey': {
+      const k = (($('#mkKey').value) || '').trim();
+      const cd = (($('#mkCode').value) || '').trim();
+      if (!k) { toast('Key 不能为空'); break; }
+      localStorage.setItem(MAP_KEY, JSON.stringify({ key: k, code: cd }));
+      AMAP.failed = false;
+      closeSheet();
+      toast('正在加载高德地图…');
+      S.mapView = 'map';
+      render();
+      break;
+    }
+
+    case 'clearMapKey':
+      localStorage.removeItem(MAP_KEY);
+      AMAP.failed = false;
+      closeSheet(); render();
+      toast('已关闭真实地图');
+      break;
+
+    case 'amap': {
+      const itA = S.items.find(x => x.id === id);
+      if (!itA || !itA.pl || !itA.pl.lat) break;
+      const url = 'https://uri.amap.com/marker?position=' + itA.pl.lng + ',' + itA.pl.lat +
+        '&name=' + encodeURIComponent(itA.title) + '&callnative=1&src=tripsync';
+      try { window.open(url, '_blank'); } catch (e) { copyText(url); }
+      break;
+    }
+
+    case 'copyday': {
+      const dpts = route(parseInt(t.dataset.day, 10));
+      if (!dpts.length) { toast('这一天还没有地点'); break; }
+      const txt = 'Day ' + t.dataset.day + '\n' + dpts.map((p, k) =>
+        (k + 1) + '. ' + p.title + '  ' + p.pl.lat.toFixed(5) + ',' + p.pl.lng.toFixed(5)).join('\n');
+      copyText(txt);
+      break;
+    }
+
+    case 'leg':
+      openLegSheet(id);
+      break;
+
+    case 'pickleg': {
+      if (!legState) break;
+      legState.mode = t.dataset.v;
+      $$('.opt', sheet).forEach(b => b.classList.toggle('on', b.dataset.v === legState.mode));
+      break;
+    }
+
+    case 'saveleg': {
+      if (!legState) break;
+      const it4 = S.items.find(x => x.id === legState.id);
+      if (!it4) break;
+      const ln = (($('#legLineIn') || {}).value || '').trim();
+      const rawM = (($('#legMinsIn') || {}).value || '').trim();
+      const mins = rawM === '' ? null : Math.max(0, Number(rawM));
+      const def = S.mode || 'taxi';
+      if (legState.mode === def && !ln && mins == null) delete it4.d.leg;
+      else it4.d.leg = { mode: legState.mode, line: ln, mins, auto: !!legState.auto };
+      it4._ts = Date.now();
+      closeSheet(); render();
+      break;
+    }
+
     case 'mode':
       S.mode = t.dataset.mode; render();
       break;
@@ -989,7 +1494,7 @@ document.addEventListener('click', e => {
       const day = parseInt(t.dataset.day, 10);
       const pts = route(day);
       if (pts.length < 3) { toast('至少 3 个地点才能优化顺序'); break; }
-      const before = totalSeconds(pts, S.mode);
+      const before = daySeconds(pts);
       const rest = pts.slice(1);
       const out = [pts[0]];
       while (rest.length) {
@@ -999,7 +1504,7 @@ document.addEventListener('click', e => {
         out.push(rest.splice(bi, 1)[0]);
       }
       out.forEach((p, k) => { p.d.order = k; p._ts = Date.now(); });
-      const after = totalSeconds(out, S.mode);
+      const after = daySeconds(out);
       save(); render();
       const gain = before - after;
       toast(gain > 60
@@ -1021,11 +1526,24 @@ document.addEventListener('click', e => {
       const price = $('#nPrice') ? parseInt($('#nPrice').value, 10) || 0 : 0;
       const ni = it({ kind, cat, title, pl: {} });
       if (kind === 'place' || kind === 'food') {
-        ni.pl = {
-          lat: 18.25 + (Math.random() - 0.5) * 0.12,
-          lng: 109.52 + (Math.random() - 0.5) * 0.18,
-          price, dur: 90
-        };
+        let lat = null, lng = null;
+        const rawC = ($('#nCoord') ? $('#nCoord').value : '').trim();
+        if (rawC) {
+          const q = rawC.split(/[,，\s]+/).map(Number);
+          if (q.length >= 2 && isFinite(q[0]) && isFinite(q[1])) { lat = q[0]; lng = q[1]; }
+        }
+        if (lat == null) {
+          const ex = liveItems().filter(i => i.pl && i.pl.lat);
+          if (ex.length) {
+            const clat = ex.reduce((a, i) => a + i.pl.lat, 0) / ex.length;
+            const clng = ex.reduce((a, i) => a + i.pl.lng, 0) / ex.length;
+            lat = clat + (Math.random() - 0.5) * 0.05;
+            lng = clng + (Math.random() - 0.5) * 0.05;
+          } else {
+            lat = 18.25; lng = 109.52;
+          }
+        }
+        ni.pl = { lat, lng, price, dur: 90 };
       }
       S.items.push(ni); ni._ts = Date.now(); closeSheet(); render();
       toast('已添加');
@@ -1047,12 +1565,16 @@ document.addEventListener('click', e => {
     }
 
     case 'reset':
-      if (confirm('重置为演示数据？当前修改会丢失。')) {
-        S = seed(); S._ts = Date.now(); save(); render(); toast('已重置');
+      if (!S) break;
+      if (confirm('重置当前行程为演示数据？当前内容会丢失。')) {
+        const f = seed();
+        S.room = f.room; S.members = f.members; S.items = f.items; S.expenses = f.expenses;
+        S._ts = Date.now(); save(); render(); toast('已重置');
       }
       break;
 
     case 'settings':
+      if (!S) break;
       openTripSheet();
       break;
 
@@ -1069,9 +1591,59 @@ document.addEventListener('click', e => {
     case 'tripSave': {
       const nm = ($('#tName').value || '').trim() || '未命名行程';
       const d = Math.min(30, Math.max(1, parseInt($('#tDays').value, 10) || 1));
-      S.room = { name: nm, days: d, start: $('#tStart').value || S.room.start };
+      const na = ($('#tNameA').value || '').trim() || S.members.A.name;
+      const nb = ($('#tNameB').value || '').trim() || S.members.B.name;
+      const ct = ($('#tCity').value || '').trim();
+      S.room = Object.assign({}, S.room, { name: nm, days: d, start: $('#tStart').value || S.room.start, city: ct });
+      S.members = { A: Object.assign({}, S.members.A, { name: na }), B: Object.assign({}, S.members.B, { name: nb }) };
       S._ts = Date.now();
-      closeSheet(); render(); toast('行程已更新');
+      closeSheet(); render(); toast('已保存');
+      break;
+    }
+
+    case 'home':
+      goHome();
+      break;
+
+    case 'open': {
+      const t = DB.trips.find(x => x.id === id);
+      if (t) openTrip(t);
+      break;
+    }
+
+    case 'newTrip':
+      openNewTripSheet();
+      break;
+
+    case 'doNewTrip': {
+      const nm = ($('#nTripName').value || '').trim() || '新行程';
+      const d = Math.min(30, Math.max(1, parseInt($('#nTripDays').value, 10) || 3));
+      const st = $('#nTripStart').value || '';
+      const na = ($('#nTripA').value || '').trim() || '我';
+      const nb = ($('#nTripB').value || '').trim() || '朋友';
+      const tpl = $('#nTripTpl').checked;
+      const t = blankTrip(nm);
+      t.room.days = d;
+      if (st) t.room.start = st;
+      t.members = { A: { name: na }, B: { name: nb } };
+      t.syncRoom = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+      if (tpl) t.items = starterPack();
+      t._ts = Date.now();
+      DB.trips.push(t);
+      closeSheet();
+      openTrip(t);
+      toast('行程已创建');
+      break;
+    }
+
+    case 'delTrip': {
+      const t = DB.trips.find(x => x.id === id);
+      if (!t) break;
+      if (!confirm('删除行程「' + t.room.name + '」？本机数据会消失（对方设备不受影响）。')) break;
+      DB.trips = DB.trips.filter(x => x.id !== id);
+      save();
+      renderHome();
+      toast('已删除');
       break;
     }
 
@@ -1089,12 +1661,15 @@ document.addEventListener('click', e => {
       break;
 
     case 'syncSave': {
+      if (!S) { toast('先进入一个行程再配同步'); break; }
       const u = ($('#sUrl').value || '').trim().replace(/\/+$/, '');
       const k = ($('#sKey').value || '').trim();
       let r = ($('#sRoom').value || '').trim();
       if (!u || !k) { toast('URL 和 Key 都要填'); break; }
       if (!/^https?:\/\//.test(u)) { toast('URL 要以 https:// 开头'); break; }
+      if (!r && S && S.syncRoom) r = S.syncRoom;
       if (!r) r = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+      if (S) { S.syncRoom = r; S._ts = Date.now(); }
       CFG = { url: u, key: k, room: r };
       cfgSave();
       closeSheet();
@@ -1105,8 +1680,12 @@ document.addEventListener('click', e => {
     }
 
     case 'syncShare': {
+      if (!S) { toast('先进一个行程再分享'); break; }
+      if (!CFG.url || !CFG.key) { toast('先填 URL 和 Key'); break; }
+      if (!S.syncRoom) { S.syncRoom = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12); S._ts = Date.now(); }
+      CFG.room = S.syncRoom; cfgSave();
       const base = location.href.split('?')[0].split('#')[0];
-      const link = base + '?r=' + encodeURIComponent(CFG.room) + '&u=' + encodeURIComponent(CFG.url) + '&k=' + encodeURIComponent(CFG.key);
+      const link = base + '?r=' + encodeURIComponent(S.syncRoom) + '&u=' + encodeURIComponent(CFG.url) + '&k=' + encodeURIComponent(CFG.key);
       copyText(link);
       break;
     }
@@ -1123,16 +1702,20 @@ document.addEventListener('click', e => {
     }
 
     case 'syncExport':
+      if (!S) { toast('先进一个行程'); break; }
       copyText(JSON.stringify(S));
       break;
 
     case 'syncImport': {
+      if (!S) { toast('先进一个行程'); break; }
       const raw = prompt('粘贴之前导出的 JSON：');
       if (!raw) break;
       try {
         const d = JSON.parse(raw);
-        if (!d || !Array.isArray(d.items)) throw new Error('bad');
-        S = d; S._ts = Date.now(); dirty = true;
+        const doc = d && Array.isArray(d.trips) ? d.trips[0] : d;
+        if (!doc || !Array.isArray(doc.items)) throw new Error('bad');
+        S.room = doc.room; S.members = doc.members; S.items = doc.items;
+        S.expenses = doc.expenses || []; S._ts = Date.now(); dirty = true;
         closeSheet(); render();
         toast('已从存档恢复');
       } catch (e) { toast('JSON 格式不对'); }
@@ -1146,6 +1729,13 @@ document.addEventListener('click', e => {
 });
 
 document.addEventListener('change', e => {
+  const st = e.target.closest('[data-act="stime"]');
+  if (st) {
+    S.room.startTime = st.value || '09:00';
+    S._ts = Date.now();
+    save(); render();
+    return;
+  }
   const t = e.target.closest('[data-act="dnote"]');
   if (!t) return;
   const item = S.items.find(x => x.id === t.dataset.id);
@@ -1157,12 +1747,14 @@ document.addEventListener('change', e => {
 
 /* ---------------- 启动 ---------------- */
 function render() {
+  if (!S) { renderHome(); return; }
   renderTop(); renderTabs(); renderPanel(); renderMap(); save();
 }
-initSyncFromURL();
-render();
-if (syncOn()) { setStatus('sync', '连接中…'); syncOnce(); startPolling(); }
-else setStatus('off', '仅本机');
+if (!initSyncFromURL()) {
+  document.body.classList.add('home');
+  const back = $('#backBtn'); if (back) back.hidden = true;
+  renderHome();
+}
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && syncOn()) syncOnce();
