@@ -318,14 +318,15 @@ function mergeDoc(remote) {
   if (changed) S.expenses = [...em.values()];
 
   if (rts > (S._ts || 0)) S._ts = rts;
-  const rr = remote.roomTs || 0;
+  const rr = remote.roomTs || remote._ts || 0;
   const remoteLive = (remote.items || []).filter(i => !i._del).length;
   const localLive = S.items.filter(i => !i._del).length;
-  const blankShell = remoteLive === 0 && localLive > 0;   // 对方是空行程，不要覆盖我的名字/日期
-  if (rr > (S.roomTs || 0) && !blankShell) {
+  const blankShell = remoteLive === 0 && localLive > 0;      // 对方是空行程，别覆盖我的
+  const localShell = localLive === 0 && remoteLive > 0;      // 我是刚建的空壳，以对方为准
+  if (!blankShell && (localShell || rr > (S.roomTs || 0))) {
     if (remote.room) S.room = remote.room;
     if (remote.members) S.members = remote.members;
-    S.roomTs = rr;
+    S.roomTs = Math.max(S.roomTs || 0, rr);
   }
   if (remote.seen) {
     const sn = Object.assign({ A: 0, B: 0 }, S.seen || {});
@@ -588,7 +589,7 @@ function tripCard(t) {
       <div class="tc-name">${esc(t.room.name)}</div>
       <span class="tc-badge ${t.syncRoom ? 'on' : ''}">${syncTxt}</span>
     </div>
-    <div class="tc-meta">${esc(t.room.start || '')} · ${t.room.days} 天 · ${esc(t.members.A.name)} &amp; ${esc(t.members.B.name)}</div>
+    <div class="tc-meta">${esc(t.room.start || '')} · ${t.room.days} 天 · ${esc(t.members.A.name)} &amp; ${esc(t.members.B.name)}${t.syncRoom ? ' · <span class="tcid">#' + esc(t.syncRoom.slice(0, 6)) + '</span>' : ''}</div>
     <div class="tc-stat">
       <span><b>${n}</b> 条目</span>
       <span><b class="${warn ? 'warn' : ''}">${warn}</b> 待处理</span>

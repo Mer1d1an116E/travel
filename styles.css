@@ -361,3 +361,11 @@ body.home .layout{padding-top:14px}
 @media(min-width:1000px){.map-slot{height:400px}}
 
 .auto{font-weight:600;color:#047857;font-size:9.5px;margin-left:2px}
+
+.diag{display:flex;gap:8px;margin:0 0 10px}
+.diag>div{flex:1;background:#F6F7F9;border-radius:9px;padding:6px 8px;min-width:0}
+.diag span{display:block;font-size:9.5px;color:#A6ACB5}
+.diag b{display:block;font-size:11px;color:#374151;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+
+.tcid{color:#7C3AED;font-weight:600;letter-spacing:.2px}
