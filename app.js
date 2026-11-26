@@ -129,7 +129,7 @@ function blankTrip(name) {
     id: uid(), syncRoom: '', role: 'A',
     room: { name: name || '新行程', days: 3, start: new Date(Date.now() + 864e5 * 14).toISOString().slice(0, 10) },
     members: { A: { name: '我' }, B: { name: '朋友' } },
-    items: [], expenses: [], seen: { A: 0, B: 0 }, _ts: 0,
+    items: [], expenses: [], seen: { A: 0, B: 0 }, _ts: 0, roomTs: 0,
     tab: 'packing', mapDay: 1, mode: 'taxi'
   };
 }
@@ -193,7 +193,7 @@ function payload() {
   const seen = Object.assign({ A: 0, B: 0 }, S.seen || {});
   seen[S.role] = Date.now();
   S.seen = seen;
-  return { room: S.room, members: S.members, items: S.items, expenses: S.expenses, seen, _ts: S._ts || 0 };
+  return { room: S.room, members: S.members, items: S.items, expenses: S.expenses, seen, roomTs: S.roomTs || 0, _ts: S._ts || 0 };
 }
 function docSig() {
   if (!S) return '';
@@ -317,10 +317,15 @@ function mergeDoc(remote) {
   });
   if (changed) S.expenses = [...em.values()];
 
-  if (rts > (S._ts || 0)) {
+  if (rts > (S._ts || 0)) S._ts = rts;
+  const rr = remote.roomTs || 0;
+  const remoteLive = (remote.items || []).filter(i => !i._del).length;
+  const localLive = S.items.filter(i => !i._del).length;
+  const blankShell = remoteLive === 0 && localLive > 0;   // 对方是空行程，不要覆盖我的名字/日期
+  if (rr > (S.roomTs || 0) && !blankShell) {
     if (remote.room) S.room = remote.room;
     if (remote.members) S.members = remote.members;
-    S._ts = rts;
+    S.roomTs = rr;
   }
   if (remote.seen) {
     const sn = Object.assign({ A: 0, B: 0 }, S.seen || {});
@@ -398,6 +403,30 @@ function openTripSheet() {
     <button class="ghost" data-act="close">取消</button>`);
 }
 
+async function testConn() {
+  if (!CFG.url || !CFG.key) { toast('还没填 Supabase URL / Key'); return; }
+  if (!S) { toast('先进入一个行程'); return; }
+  if (!S.syncRoom) { S.syncRoom = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12); }
+  CFG.room = S.syncRoom; cfgSave();
+  setStatus('sync', '测试中…');
+  try {
+    const remote = await pull();
+    if (!remote) {
+      await push();
+      toast('服务器还没有这个房间，已创建 ✅');
+    } else {
+      toast('连接正常 ✅ 服务器上有 ' + (remote.items || []).filter(i => !i._del).length + ' 条');
+      setStatus('ok', '已连接');
+      const changed = mergeDoc(remote);
+      if (changed) render();
+    }
+  } catch (e) {
+    const h = syncHint(e);
+    setStatus('error', h);
+    toast('连接失败：' + h);
+  }
+}
+
 function openSyncSheet() {
   const on = syncOn();
   const other = S.role === 'A' ? 'B' : 'A';
@@ -417,6 +446,12 @@ function openSyncSheet() {
     <div class="shead">同步设置</div>
     <div style="font-size:12px;color:#6B7280;margin:-6px 0 2px">${esc(st)}</div>
     ${on ? `<div style="font-size:11.5px;color:#A6ACB5;margin-bottom:10px">${esc(S.members[other].name)} ${otherSeen ? '上次改动 ' + fmtAgo(Date.now() - otherSeen) : '暂无记录'}</div>` : '<div style="height:8px"></div>'}
+    <div class="diag">
+      <div><span>房间号</span><b>${esc((S && S.syncRoom) || '未生成')}</b></div>
+      <div><span>本机条目</span><b>${S ? liveItems().length : 0}</b></div>
+      <div><span>服务器</span><b>${CFG.url ? '已填地址' : '未填'}</b></div>
+    </div>
+    ${(CFG.url && CFG.key && S) ? '<button class="ghost" data-act="synctest">🔌 测试连接（看服务器上有几条）</button>' : ''}
     <div class="srow"><label>URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" value="${esc(CFG.url || '')}"></div>
     <div class="srow"><label>Key</label><input id="sKey" placeholder="anon public key（eyJhb…）" value="${esc(CFG.key || '')}"></div>
     <div class="srow"><label>房间</label><input id="sRoom" placeholder="留空自动生成" value="${esc((S && S.syncRoom) || '')}"></div>
@@ -1061,7 +1096,7 @@ function renderMap() {
         ${MODES.map(m => `<button class="${(S.mode || 'taxi') === m.k ? 'on' : ''}" data-act="mode" data-mode="${m.k}">${m.label}</button>`).join('')}
         ${view === 'metro' ? `<label class="stime">出发<input type="time" data-act="stime" value="${esc(S.room.startTime || '09:00')}"></label>` : ''}
       </div>
-      ${view === 'metro' ? routeDiagram(pts) : (mapReady() ? '<div id="mapSlot" class="map-slot"></div>' : mapSVG(pts))}
+      ${view === 'metro' ? routeDiagram(pts) : (mapReady() && pts.length ? '<div id="mapSlot" class="map-slot"></div>' : mapSVG(pts))}
       <div class="stats">
         <div><span>点位</span><b class="${pts.length > 5 ? 'warn' : ''}">${pts.length} 个</b></div>
         <div><span>总通勤</span><b class="${total > 7200 ? 'warn' : ''}">${pts.length > 1 ? fmtDur(total) : '—'}</b></div>
@@ -1075,7 +1110,7 @@ function renderMap() {
       <button class="mbtn ghostbtn" data-act="copyday" data-day="${day}">📋 复制今天的地点清单（名称 + 坐标）</button>
     </div>`;
 
-  if (view !== 'metro' && mapReady()) mountAmap(pts);
+  if (view !== 'metro' && mapReady() && pts.length) mountAmap(pts);
 }
 
 function hm(mins) {
@@ -1597,6 +1632,7 @@ document.addEventListener('click', e => {
       S.room = Object.assign({}, S.room, { name: nm, days: d, start: $('#tStart').value || S.room.start, city: ct });
       S.members = { A: Object.assign({}, S.members.A, { name: na }), B: Object.assign({}, S.members.B, { name: nb }) };
       S._ts = Date.now();
+      S.roomTs = S._ts;
       closeSheet(); render(); toast('已保存');
       break;
     }
@@ -1629,6 +1665,7 @@ document.addEventListener('click', e => {
       t.syncRoom = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
       if (tpl) t.items = starterPack();
       t._ts = Date.now();
+      t.roomTs = t._ts;
       DB.trips.push(t);
       closeSheet();
       openTrip(t);
@@ -1658,6 +1695,10 @@ document.addEventListener('click', e => {
 
     case 'sync':
       openSyncSheet();
+      break;
+
+    case 'synctest':
+      testConn();
       break;
 
     case 'syncSave': {
@@ -1733,6 +1774,7 @@ document.addEventListener('change', e => {
   if (st) {
     S.room.startTime = st.value || '09:00';
     S._ts = Date.now();
+    S.roomTs = S._ts;
     save(); render();
     return;
   }
