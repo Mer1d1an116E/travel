@@ -159,7 +159,22 @@ function loadDB() {
    需要先在 Supabase 建一张 rooms 表，SQL 见 sync 面板底部
    ========================================================== */
 const CFG_KEY = 'tripsync_cfg';
+
+/* ⬇️ 内置数据库：把 Supabase 的 URL 和 anon key 填在这里，
+   所有打开这个网页的人都能零配置同步，不用自己注册。
+   例：{ url: 'https://abcd.supabase.co', key: 'eyJhbGciOi...' } */
+const DEFAULT_DB = { url: '', key: '' };
+
+const SETUP_SQL = 'create table rooms (id text primary key, doc jsonb, updated_at timestamptz default now());\n' +
+  'alter table rooms enable row level security;\n' +
+  'create policy "ok" on rooms for all to anon using (true) with check (true);\n' +
+  'grant all on rooms to anon;';
+
 let CFG = (() => { try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch (e) { return {}; } })();
+if (DEFAULT_DB.url && DEFAULT_DB.key) {
+  if (!CFG.url) CFG.url = DEFAULT_DB.url;
+  if (!CFG.key) CFG.key = DEFAULT_DB.key;
+}
 let dirty = false, pushing = false, pushTimer = null, pollTimer = null, beatTimer = null, lastSig = '';
 let syncState = { status: 'off', msg: '仅本机' };
 
@@ -380,6 +395,7 @@ function initSyncFromURL() {
   if (!t) {
     t = blankTrip('一起的行程');
     t.syncRoom = r;
+    if (u && k) t.db = { url: u, key: k };
     DB.trips.push(t);
   }
   openTrip(t);
@@ -453,6 +469,10 @@ function openSyncSheet() {
       <div><span>服务器</span><b>${CFG.url ? '已填地址' : '未填'}</b></div>
     </div>
     ${(CFG.url && CFG.key && S) ? '<button class="ghost" data-act="synctest">🔌 测试连接（看服务器上有几条）</button>' : ''}
+    <button class="ghost" data-act="copySql">📋 复制建表语句（贴到 Supabase 的 SQL Editor）</button>
+    <div style="font-size:10.5px;color:#A6ACB5;margin:-2px 0 8px">
+      当前行程绑定的库：${S && S.db && S.db.url ? esc(S.db.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')) : '还没绑定（会使用本机默认配置）'}
+    </div>
     <div class="srow"><label>URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" value="${esc(CFG.url || '')}"></div>
     <div class="srow"><label>Key</label><input id="sKey" placeholder="anon public key（eyJhb…）" value="${esc(CFG.key || '')}"></div>
     <div class="srow"><label>房间</label><input id="sRoom" placeholder="留空自动生成" value="${esc((S && S.syncRoom) || '')}"></div>
@@ -468,10 +488,7 @@ function openSyncSheet() {
       <div style="margin-top:8px;padding:10px;border-radius:10px;background:#F6F7F9;font-size:11px;line-height:1.6;color:#6B7280">
         1. supabase.com 注册 → New project（免费）<br>
         2. 左侧 SQL Editor 粘贴并运行：<br>
-        <code style="display:block;margin:4px 0;padding:6px;background:#fff;border:1px solid #E5E8ED;border-radius:6px;font-size:10px;white-space:pre-wrap">create table rooms (id text primary key, doc jsonb, updated_at timestamptz default now());
-alter table rooms enable row level security;
-create policy "ok" on rooms for all to anon using (true) with check (true);
-grant all on rooms to anon;</code>
+        <code style="display:block;margin:4px 0;padding:6px;background:#fff;border:1px solid #E5E8ED;border-radius:6px;font-size:10px;white-space:pre-wrap">${esc(SETUP_SQL)}</code>
         3. Settings → API，复制 Project URL 和 anon public key 填到上面<br>
         4. 保存后点「复制分享链接」，发给朋友他打开就能一起填
       </div>
@@ -607,7 +624,13 @@ function renderHome() {
   $('#tabs').innerHTML = '';
   $('#alertBar').hidden = true;
   $('#mapPanel').innerHTML = '';
-  $('#panel').innerHTML = DB.trips.map(tripCard).join('') +
+  const needSetup = !(CFG.url && CFG.key);
+  $('#panel').innerHTML =
+    (needSetup ? `<button class="setupbar" data-act="sync">
+        <b>还没连接云同步</b>
+        <span>现在只能在这台设备用。点这里配置，配好后才能和朋友一起填（约 5 分钟）</span>
+      </button>` : '') +
+    DB.trips.map(tripCard).join('') +
     `<button class="newtrip" data-act="newTrip">＋ 新建行程</button>
      <div class="homefoot">点卡片进入 · 数据存在本机，配置 Supabase 后两人实时同步</div>`;
 }
@@ -621,6 +644,7 @@ function openTrip(t) {
   if (!S.mode) S.mode = 'taxi';
   DB.currentId = t.id;
   CFG.room = t.syncRoom || '';
+  if (t.db && t.db.url && t.db.key) { CFG.url = t.db.url; CFG.key = t.db.key; }
   cfgSave();
   document.body.classList.remove('home');
   const back = $('#backBtn'); if (back) back.hidden = false;
@@ -1664,6 +1688,7 @@ document.addEventListener('click', e => {
       if (st) t.room.start = st;
       t.members = { A: { name: na }, B: { name: nb } };
       t.syncRoom = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+      if (CFG.url && CFG.key) t.db = { url: CFG.url, key: CFG.key };
       if (tpl) t.items = starterPack();
       t._ts = Date.now();
       t.roomTs = t._ts;
@@ -1702,6 +1727,10 @@ document.addEventListener('click', e => {
       testConn();
       break;
 
+    case 'copySql':
+      copyText(SETUP_SQL);
+      break;
+
     case 'syncSave': {
       if (!S) { toast('先进入一个行程再配同步'); break; }
       const u = ($('#sUrl').value || '').trim().replace(/\/+$/, '');
@@ -1711,7 +1740,7 @@ document.addEventListener('click', e => {
       if (!/^https?:\/\//.test(u)) { toast('URL 要以 https:// 开头'); break; }
       if (!r && S && S.syncRoom) r = S.syncRoom;
       if (!r) r = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
-      if (S) { S.syncRoom = r; S._ts = Date.now(); }
+      if (S) { S.syncRoom = r; S.db = { url: u, key: k }; S._ts = Date.now(); }
       CFG = { url: u, key: k, room: r };
       cfgSave();
       closeSheet();
@@ -1734,6 +1763,7 @@ document.addEventListener('click', e => {
 
     case 'syncOff': {
       CFG = {};
+      if (S) { delete S.db; S.syncRoom = ''; S._ts = Date.now(); }
       cfgSave();
       clearInterval(pollTimer);
       clearInterval(beatTimer);
